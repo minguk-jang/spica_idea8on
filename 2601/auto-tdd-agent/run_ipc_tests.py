@@ -11,8 +11,9 @@ import time
 import threading
 import socket
 import re
+import datetime
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 # IPC 모드 활성화 (imports 전에 설정)
 os.environ["USE_LLM"] = "true"
@@ -28,14 +29,26 @@ SOCKET_PATH = "/tmp/opencode_llm_socket"
 PROJECT_ROOT = Path(__file__).parent
 DATA_DIR = PROJECT_ROOT / "data" / "scenarios"
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "logs"
+REPORTS_DIR = PROJECT_ROOT / "reports"
 
 
 def extract_user_input_from_prompt(prompt: str) -> str:
     """프롬프트에서 사용자 입력 추출"""
     lines = prompt.split("\n")
-    for line in lines:
-        if line.startswith("사용자 응답:") or line.startswith("User:"):
-            return line.split(":", 1)[1].strip()
+    for i, line in enumerate(lines):
+        if line.startswith("사용자 응답:") or line.startswith("User Response:"):
+            # 1. 같은 줄에 내용이 있는 경우
+            content = line.split(":", 1)[1].strip()
+            if content and content != '""' and content != '"':
+                return content.strip('" ')
+
+            # 2. 다음 줄에 내용이 있는 경우 (따옴표로 감싸진 경우)
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line.startswith('"') and next_line.endswith('"'):
+                    return next_line.strip('" ')
+                elif next_line:  # 따옴표 없는 경우
+                    return next_line
     return ""
 
 
@@ -43,13 +56,24 @@ def extract_plan_from_prompt(prompt: str) -> Dict[str, Any]:
     """프롬프트에서 현재 plan 상태 추출"""
     plan = {}
     slots = ["destination", "start_date", "duration", "budget", "companions", "purpose"]
+
+    # JSON 형태의 plan 찾기
     for slot in slots:
-        if f'"{slot}": ""' in prompt or f'"{slot}": """' in prompt:
-            plan[slot] = ""  # 비어있음
-        elif f'"{slot}":' in prompt:
-            match = re.search(rf'"{slot}":\s*"([^"]+)"', prompt)
+        # 다양한 패턴 시도
+        patterns = [
+            rf"'{slot}': '([^']*)'",
+            rf'"{slot}": "([^"]*)"',
+            rf"{slot}: ([^\n,}}]+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, prompt)
             if match:
-                plan[slot] = match.group(1)
+                value = match.group(1).strip()
+                if value and value != '""' and value != "''":
+                    plan[slot] = value
+                break
+
     return plan
 
 
@@ -66,8 +90,6 @@ def handle_llm_request(conn: socket.socket):
         request = json.loads(request_data.decode())
         prompt = request.get("prompt", "")
 
-        print(f"Received prompt (first 200 chars): {prompt[:200]}")
-
         # 프롬프트 분석하여 응답 생성
         response_content = generate_smart_response(prompt)
 
@@ -83,19 +105,19 @@ def handle_llm_request(conn: socket.socket):
 
 def generate_smart_response(prompt: str) -> str:
     """프롬프트를 분석하여 적절한 응답 생성"""
-    user_input = extract_user_input_from_prompt(prompt)
-    current_plan = extract_plan_from_prompt(prompt)
 
-    # 슬롯 업데이트 요청인지 질문 생성 요청인지 판단
-    if (
-        "업데이트" in prompt
-        or "추출" in prompt
-        or "parser" in prompt.lower()
-        or "slot" in prompt.lower()
-    ):
-        return generate_slot_parsing_response(user_input)
-    else:
+    # 질문 생성 요청 식별 (Question Generation)
+    if "다음에 물어볼 질문" in prompt or "질문 생성" in prompt:
+        current_plan = extract_plan_from_prompt(prompt)
         return generate_question_response(current_plan)
+
+    # 슬롯 추출 요청 식별 (Slot Parsing)
+    elif "사용자 응답" in prompt or "정보를 추출" in prompt:
+        user_input = extract_user_input_from_prompt(prompt)
+        return generate_slot_parsing_response(user_input)
+
+    # 기본값 (알 수 없는 요청)
+    return "응답을 생성할 수 없습니다."
 
 
 def generate_slot_parsing_response(user_input: str) -> str:
@@ -238,7 +260,9 @@ def load_all_tcs() -> List[Dict[str, Any]]:
     return test_cases
 
 
-def run_single_tc(tc: Dict[str, Any], max_turns: int = 15) -> EvaluationResult:
+def run_single_tc(
+    tc: Dict[str, Any], max_turns: int = 15
+) -> Tuple[EvaluationResult, List[Dict[str, str]]]:
     """단일 테스트 케이스 실행"""
     graph = create_graph()
     adapter = LangGraphAdapter(graph)
@@ -252,13 +276,14 @@ def run_single_tc(tc: Dict[str, Any], max_turns: int = 15) -> EvaluationResult:
     step_result = adapter.start_conversation(initial_message)
 
     if step_result.error:
-        return EvaluationResult(
+        result = EvaluationResult(
             success=False,
             final_plan={},
             ground_truth=tc["ground_truth"],
             turn_count=0,
             failure_detail=f"시작 오류: {step_result.error}",
         )
+        return result, turn_history
 
     for turn in range(max_turns):
         if step_result.is_complete:
@@ -279,20 +304,21 @@ def run_single_tc(tc: Dict[str, Any], max_turns: int = 15) -> EvaluationResult:
         step_result = adapter.continue_conversation(user_response)
 
         if step_result.error:
-            return EvaluationResult(
+            result = EvaluationResult(
                 success=False,
                 final_plan=step_result.current_plan or {},
                 ground_truth=tc["ground_truth"],
                 turn_count=len(turn_history),
                 failure_detail=f"실행 오류: {step_result.error}",
             )
+            return result, turn_history
 
     final_plan = step_result.current_plan or {}
     result = evaluate_plan(final_plan, tc["ground_truth"], turn_history, max_turns)
 
     save_log(tc["id"], result, turn_history)
 
-    return result
+    return result, turn_history
 
 
 def save_log(tc_id: str, result: EvaluationResult, turn_history: List[Dict[str, str]]):
@@ -317,8 +343,60 @@ def save_log(tc_id: str, result: EvaluationResult, turn_history: List[Dict[str, 
         json.dump(log_data, f, ensure_ascii=False, indent=2)
 
 
+def generate_report(results: List[Any], start_time: datetime.datetime):
+    """테스트 실행 리포트 생성"""
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    timestamp = start_time.strftime("%Y%m%d_%H%M%S")
+    report_file = REPORTS_DIR / f"test_report_{timestamp}.md"
+
+    success_count = sum(1 for _, r, _ in results if r and r.success)
+    total_count = len(results)
+    duration = datetime.datetime.now() - start_time
+
+    with open(report_file, "w", encoding="utf-8") as f:
+        f.write(f"# IPC TDD Test Report\n\n")
+        f.write(f"- **Date:** {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"- **Duration:** {duration}\n")
+        f.write(f"- **Total Tests:** {total_count}\n")
+        f.write(f"- **Success:** {success_count}\n")
+        f.write(f"- **Failed:** {total_count - success_count}\n\n")
+
+        f.write("## Test Cases\n\n")
+
+        for tc, result, turn_history in results:
+            status = "✅ Success" if result and result.success else "❌ Failed"
+            f.write(f"### [{tc['id']}] {tc['name']}\n")
+            f.write(f"- **Status:** {status}\n")
+
+            if result:
+                f.write(f"- **Turns:** {result.turn_count}\n")
+                if not result.success and result.failure_detail:
+                    f.write(f"- **Failure Reason:** {result.failure_detail}\n")
+
+                f.write("\n#### Final Plan\n")
+                f.write("```json\n")
+                f.write(json.dumps(result.final_plan, indent=2, ensure_ascii=False))
+                f.write("\n```\n")
+
+                f.write("\n#### Conversation History\n")
+                if turn_history:
+                    for turn in turn_history:
+                        f.write(f"**Turn {turn['turn']}**\n")
+                        f.write(f"- 🤖 **Agent:** {turn['question']}\n")
+                        f.write(f"- 👤 **User:** {turn['response']}\n\n")
+                else:
+                    f.write("No conversation history available.\n")
+
+            f.write("---\n\n")
+
+    print(f"\n📄 Report generated: {report_file}")
+
+
 def main():
     """메인 실행"""
+    start_time = datetime.datetime.now()
+
     print("=" * 60)
     print("Planning Agent TDD (IPC LLM Mode)")
     print("=" * 60)
@@ -345,8 +423,8 @@ def main():
         print(f"[{tc['id']}] {tc['name']} 실행 중...")
 
         try:
-            result = run_single_tc(tc)
-            results.append((tc, result))
+            result, turn_history = run_single_tc(tc)
+            results.append((tc, result, turn_history))
 
             status = "✓ 성공" if result.success else "✗ 실패"
             print(f"  {status} ({result.turn_count}턴)")
@@ -358,7 +436,7 @@ def main():
             import traceback
 
             traceback.print_exc()
-            results.append((tc, None))
+            results.append((tc, None, []))
 
         print()
 
@@ -367,7 +445,7 @@ def main():
     print("요약")
     print("=" * 60)
 
-    success_count = sum(1 for _, r in results if r and r.success)
+    success_count = sum(1 for _, r, _ in results if r and r.success)
     total_count = len(results)
 
     print(f"성공: {success_count}/{total_count}")
@@ -375,7 +453,7 @@ def main():
 
     if success_count < total_count:
         print("\n실패 케이스:")
-        for tc, result in results:
+        for tc, result, _ in results:
             if not result or not result.success:
                 failure_cat = (
                     result.failure_category.value
@@ -383,6 +461,9 @@ def main():
                     else "unknown"
                 )
                 print(f"  - {tc['id']}: {failure_cat}")
+
+    # 리포트 생성
+    generate_report(results, start_time)
 
 
 if __name__ == "__main__":
