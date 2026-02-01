@@ -1,0 +1,31 @@
+{
+  "id": "s01_v01",
+  "name": "기본 시나리오 - 모든 정보 한번에 제공",
+  "description": "사용자가 모든 필수 정보를 협조적으로 한번에 제공하는 가장 기본적인 시나리오",
+  "user_info": {
+    "base": {
+      "initial_message": "여행 계획을 도와주세요."
+    },
+    "actual": {
+      "destination": "제주도",
+      "start_date": "2026-03-15",
+      "duration": "3박 4일",
+      "budget": "100만원",
+      "companions": "친구 2명",
+      "purpose": "휴양"
+    }
+  },
+  "response_rules": {
+    "reveal_strategy": "all_at_once",
+    "clarification_behavior": "cooperative",
+    "style": "concise"
+  },
+  "ground_truth": {
+    "destination": "제주도",
+    "start_date": "2026-03-15",
+    "duration": "3박 4일",
+    "budget": "100만원",
+    "companions": "친구 2명",
+    "purpose": "휴양"
+  }
+}

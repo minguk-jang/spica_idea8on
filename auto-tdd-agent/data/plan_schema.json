@@ -1,0 +1,20 @@
+{
+  "required_slots": [
+    "destination",
+    "start_date",
+    "duration"
+  ],
+  "optional_slots": [
+    "budget",
+    "companions",
+    "purpose"
+  ],
+  "slot_types": {
+    "destination": "string",
+    "start_date": "date",
+    "duration": "string",
+    "budget": "string",
+    "companions": "string",
+    "purpose": "string"
+  }
+}

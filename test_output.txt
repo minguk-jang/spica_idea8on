@@ -1,0 +1,1 @@
+/Users/mingukjang/.local/share/uv/python/cpython-3.14.0-macos-x86_64-none/bin/python3.14: can't open file '/Users/mingukjang/git/spica_idea8on/2601/quick_test.py': [Errno 2] No such file or directory
