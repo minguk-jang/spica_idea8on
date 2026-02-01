@@ -24,8 +24,12 @@ def get_llm_client(
     Returns:
         ChatOpenAI 또는 IPCLLMClient 인스턴스
     """
-    # IPC 모드 확인
-    if os.environ.get("USE_IPC_LLM", "").lower() == "true":
+    # IPC 모드 확인 (EnvConfig 또는 환경 변수)
+    use_ipc = (
+        EnvConfig.USE_IPC_LLM or os.environ.get("USE_IPC_LLM", "").lower() == "true"
+    )
+
+    if use_ipc:
         return get_ipc_llm_client()
 
     # 환경 변수 검증

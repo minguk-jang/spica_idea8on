@@ -163,13 +163,17 @@ LLM.invoke() 호출                프롬프트 분석 및 응답 생성
 
 ### 환경 변수
 
-```bash
-# IPC 모드 활성화
-export USE_IPC_LLM=true
+`.env` 파일에서 IPC 모드를 켜거나 끌 수 있습니다:
 
-# GLM API 사용 (기본값)
-unset USE_IPC_LLM
+```bash
+# IPC 모드 활성화 (비용 없음, 로컬 시뮬레이션)
+USE_IPC_LLM=true
+
+# API 모드 (실제 LLM 사용) - GLM_API_KEY 필요
+USE_IPC_LLM=false
 ```
+
+IPC 테스트 전용 스크립트(`run_ipc_tests.py`)는 `.env` 설정과 관계없이 항상 IPC 모드로 동작합니다.
 
 ## 테스트 결과
 
